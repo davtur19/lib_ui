@@ -319,9 +319,25 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
-	SetGeometryAndScreen(
-		window(),
-		rect.marginsAdded({ 0, titleHeight(), 0, 0 }));
+	const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
+	if (_handle) {
+		const auto screen = QGuiApplication::screenAt(target.center());
+		if (screen && screen != window()->screen()) {
+			SetWindowPos(
+				_handle,
+				nullptr,
+				target.x(),
+				target.y(),
+				0,
+				0,
+				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+			_dpi = GetDpiForWindowSupported()
+				? GetDpiForWindow(_handle)
+				: _dpi.current();
+			updateMargins();
+		}
+	}
+	SetGeometryAndScreen(window(), target);
 }
 
 void WindowHelper::showFullScreen() {

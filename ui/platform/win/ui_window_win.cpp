@@ -319,8 +319,8 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
-	const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
 	if (_handle) {
+		const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
 		const auto screen = QGuiApplication::screenAt(target.center());
 		if (screen && screen != window()->screen()) {
 			SetWindowPos(
@@ -337,7 +337,9 @@ void WindowHelper::setGeometry(QRect rect) {
 			updateMargins();
 		}
 	}
-	SetGeometryAndScreen(window(), target);
+	SetGeometryAndScreen(
+		window(),
+		rect.marginsAdded({ 0, titleHeight(), 0, 0 }));
 }
 
 void WindowHelper::showFullScreen() {

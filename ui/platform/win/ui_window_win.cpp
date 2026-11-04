@@ -319,24 +319,6 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
-	if (_handle) {
-		const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
-		const auto screen = QGuiApplication::screenAt(target.center());
-		if (screen && screen != window()->screen()) {
-			SetWindowPos(
-				_handle,
-				nullptr,
-				target.x(),
-				target.y(),
-				0,
-				0,
-				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-			_dpi = GetDpiForWindowSupported()
-				? GetDpiForWindow(_handle)
-				: _dpi.current();
-			updateMargins();
-		}
-	}
 	SetGeometryAndScreen(
 		window(),
 		rect.marginsAdded({ 0, titleHeight(), 0, 0 }));
@@ -941,6 +923,15 @@ void WindowHelper::updateMargins() {
 	_updatingMargins = true;
 	const auto guard = gsl::finally([&] { _updatingMargins = false; });
 
+	const auto liveDpi = GetDpiForWindowSupported()
+		? int(GetDpiForWindow(_handle))
+		: int(_dpi.current());
+	if (_marginsDpi && liveDpi != _marginsDpi) {
+		// Qt scales the custom margins itself on a DPI change.
+		_dpi = liveDpi;
+		return;
+	}
+
 	RECT r{};
 	const auto style = GetWindowLongPtr(_handle, GWL_STYLE);
 	const auto styleEx = GetWindowLongPtr(_handle, GWL_EXSTYLE);
@@ -1008,6 +999,9 @@ void WindowHelper::updateMargins() {
 		_marginsDelta = QMargins();
 	}
 	SetCustomMargins(window()->windowHandle(), margins);
+	if (!_marginsDpi) {
+		_marginsDpi = liveDpi;
+	}
 }
 
 void WindowHelper::fixMaximizedWindow() {

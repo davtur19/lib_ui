@@ -76,6 +76,37 @@ BOOL(__stdcall *AdjustWindowRectExForDpi)(
 	return Result;
 }
 
+HRESULT(__stdcall *GetDpiForMonitor)(
+	_In_ HMONITOR hmonitor,
+	_In_ int dpiType,
+	_Out_ UINT *dpiX,
+	_Out_ UINT *dpiY);
+
+[[nodiscard]] bool GetDpiForMonitorSupported() {
+	static const auto Result = [&] {
+#define LOAD_SYMBOL(lib, name) base::Platform::LoadMethod(lib, #name, name)
+		const auto shcore = base::Platform::SafeLoadLibrary(L"Shcore.dll");
+		return LOAD_SYMBOL(shcore, GetDpiForMonitor);
+#undef LOAD_SYMBOL
+	}();
+	return Result;
+}
+
+[[nodiscard]] int DpiForPoint(QPoint point) {
+	if (!GetDpiForMonitorSupported()) {
+		return 0;
+	}
+	const auto monitor = MonitorFromPoint(
+		POINT{ point.x(), point.y() },
+		MONITOR_DEFAULTTONEAREST);
+	auto dpiX = UINT(0);
+	auto dpiY = UINT(0);
+	return (monitor
+		&& SUCCEEDED(GetDpiForMonitor(monitor, 0, &dpiX, &dpiY)))
+		? int(dpiX)
+		: 0;
+}
+
 [[nodiscard]] bool GetSystemMetricsForDpiSupported() {
 	static const auto Result = [&] {
 #define LOAD_SYMBOL(lib, name) base::Platform::LoadMethod(lib, #name, name)
@@ -319,15 +350,32 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
-	if (_handle) {
+	if (_handle
+		&& !_isFullScreen
+		&& !window()->isMinimized()
+		&& !window()->isMaximized()
+		&& !window()->isFullScreen()) {
 		const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
 		const auto screen = QGuiApplication::screenAt(target.center());
-		if (screen && screen != window()->screen()) {
+		const auto currentDpi = int(_dpi.current());
+		const auto targetDpi = DpiForPoint(target.center());
+		if (screen
+			&& screen != window()->screen()
+			&& currentDpi > 0
+			&& targetDpi > 0
+			&& targetDpi != currentDpi) {
+			auto frame = RECT();
+			auto client = POINT{ 0, 0 };
+			GetWindowRect(_handle, &frame);
+			ClientToScreen(_handle, &client);
+			const auto offset = QPoint(
+				client.x - frame.left,
+				client.y - frame.top);
 			SetWindowPos(
 				_handle,
 				nullptr,
-				target.x(),
-				target.y(),
+				target.x() - offset.x(),
+				target.y() - offset.y(),
 				0,
 				0,
 				SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);

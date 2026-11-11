@@ -223,7 +223,7 @@ RpWidget *WindowHelper::titleWidget() {
 QMargins WindowHelper::frameMargins() {
 	return _title->isHidden()
 		? BasicWindowHelper::nativeFrameMargins()
-		: QMargins{ 0, _title->height(), 0, 0 };
+		: QMargins{ 0, st::windowTitleHeight, 0, 0 };
 }
 
 int WindowHelper::additionalContentPadding() const {
@@ -839,7 +839,7 @@ HitTestResult WindowHelper::systemButtonHitTest(int result) const {
 }
 
 int WindowHelper::titleHeight() const {
-	return _title->isHidden() ? 0 : _title->height();
+	return _title->isHidden() ? 0 : st::windowTitleHeight;
 }
 
 bool WindowHelper::nativeResize() const {

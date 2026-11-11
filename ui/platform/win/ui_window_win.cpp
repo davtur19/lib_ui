@@ -76,6 +76,37 @@ BOOL(__stdcall *AdjustWindowRectExForDpi)(
 	return Result;
 }
 
+HRESULT(__stdcall *GetDpiForMonitor)(
+	_In_ HMONITOR hmonitor,
+	_In_ int dpiType,
+	_Out_ UINT *dpiX,
+	_Out_ UINT *dpiY);
+
+[[nodiscard]] bool GetDpiForMonitorSupported() {
+	static const auto Result = [&] {
+#define LOAD_SYMBOL(lib, name) base::Platform::LoadMethod(lib, #name, name)
+		const auto shcore = base::Platform::SafeLoadLibrary(L"Shcore.dll");
+		return LOAD_SYMBOL(shcore, GetDpiForMonitor);
+#undef LOAD_SYMBOL
+	}();
+	return Result;
+}
+
+[[nodiscard]] int DpiForPoint(QPoint point) {
+	if (!GetDpiForMonitorSupported()) {
+		return 0;
+	}
+	const auto monitor = MonitorFromPoint(
+		POINT{ point.x(), point.y() },
+		MONITOR_DEFAULTTONEAREST);
+	auto dpiX = UINT(0);
+	auto dpiY = UINT(0);
+	return (monitor
+		&& SUCCEEDED(GetDpiForMonitor(monitor, 0, &dpiX, &dpiY)))
+		? int(dpiX)
+		: 0;
+}
+
 [[nodiscard]] bool GetSystemMetricsForDpiSupported() {
 	static const auto Result = [&] {
 #define LOAD_SYMBOL(lib, name) base::Platform::LoadMethod(lib, #name, name)
@@ -319,6 +350,18 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
+	if (_handle
+		&& !_isFullScreen
+		&& !window()->isMinimized()
+		&& !window()->isMaximized()
+		&& !window()->isFullScreen()) {
+		const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
+		const auto targetDpi = DpiForPoint(target.center());
+		const auto currentDpi = int(_dpi.current());
+		if (targetDpi > 0 && currentDpi > 0 && targetDpi != currentDpi) {
+			updateMargins(uint(targetDpi));
+		}
+	}
 	SetGeometryAndScreen(
 		window(),
 		rect.marginsAdded({ 0, titleHeight(), 0, 0 }));
@@ -916,7 +959,7 @@ void WindowHelper::enableCloakingForHidden() {
 	*firstExposeFilter = base::install_event_filter(qwindow, filter);
 }
 
-void WindowHelper::updateMargins() {
+void WindowHelper::updateMargins(uint dpi) {
 	// Full screen keeps margins of normal state, each change makes Qt
 	// resize frame and breaks geometry restored after full screen.
 	if (!_handle || _updatingMargins || _isFullScreen) {
@@ -929,9 +972,9 @@ void WindowHelper::updateMargins() {
 	RECT r{};
 	const auto style = GetWindowLongPtr(_handle, GWL_STYLE);
 	const auto styleEx = GetWindowLongPtr(_handle, GWL_EXSTYLE);
-	const auto dpi = _dpi.current();
-	if (AdjustWindowRectExForDpiSupported() && dpi) {
-		AdjustWindowRectExForDpi(&r, style, false, styleEx, dpi);
+	const auto useDpi = dpi ? dpi : _dpi.current();
+	if (AdjustWindowRectExForDpiSupported() && useDpi) {
+		AdjustWindowRectExForDpi(&r, style, false, styleEx, useDpi);
 	} else {
 		AdjustWindowRectEx(&r, style, false, styleEx);
 	}

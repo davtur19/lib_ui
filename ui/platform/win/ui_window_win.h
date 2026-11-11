@@ -50,7 +50,7 @@ public:
 
 private:
 	void init();
-	void updateMargins();
+	void updateMargins(uint dpi = 0);
 	void updateCloaking();
 	void enableCloakingForHidden();
 	void updateWindowFrameColors();

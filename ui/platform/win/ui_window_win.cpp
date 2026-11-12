@@ -25,6 +25,7 @@
 
 #include <QtCore/QPoint>
 #include <QtGui/QWindow>
+#include <QtGui/QScreen>
 #include <QtWidgets/QStyleFactory>
 #include <QtWidgets/QApplication>
 #include <qpa/qplatformnativeinterface.h>
@@ -254,7 +255,7 @@ RpWidget *WindowHelper::titleWidget() {
 QMargins WindowHelper::frameMargins() {
 	return _title->isHidden()
 		? BasicWindowHelper::nativeFrameMargins()
-		: QMargins{ 0, st::windowTitleHeight, 0, 0 };
+		: QMargins{ 0, titleHeight(), 0, 0 };
 }
 
 int WindowHelper::additionalContentPadding() const {
@@ -350,24 +351,141 @@ void WindowHelper::setFixedSize(QSize size) {
 }
 
 void WindowHelper::setGeometry(QRect rect) {
+	_pendingDpi = 0;
+	++_pendingGeneration;
+	const auto generation = _pendingGeneration;
+	auto title = titleHeight();
+	auto targetTitle = title;
+	auto target = rect.marginsAdded({ 0, targetTitle, 0, 0 });
 	if (_handle
 		&& !_isFullScreen
 		&& !window()->isMinimized()
 		&& !window()->isMaximized()
 		&& !window()->isFullScreen()) {
-		const auto target = rect.marginsAdded({ 0, titleHeight(), 0, 0 });
-		const auto targetDpi = DpiForPoint(target.center());
+		const auto probeCenter = target.center();
+		const auto monitor = MonitorFromPoint(
+			POINT{ probeCenter.x(), probeCenter.y() },
+			MONITOR_DEFAULTTONEAREST);
+		const auto probeDpi = DpiForPoint(probeCenter);
+		const auto appScreen = QGuiApplication::screenAt(probeCenter);
+		const auto targetDpr = appScreen
+			? appScreen->devicePixelRatio()
+			: (probeDpi > 0 ? probeDpi / 96. : 0.);
+		if (_title->isHidden()) {
+			targetTitle = 0;
+		} else if (monitor) {
+			targetTitle = _title->st()->height + std::max(0,
+				_title->additionalPaddingFor(monitor, targetDpr, true));
+		} else {
+			targetTitle = _title->st()->height;
+		}
+		target = rect.marginsAdded({ 0, targetTitle, 0, 0 });
+		// Match SetGeometryAndScreen() and Qt's top-level conversion screen.
+		// This screen supplies the DIP-to-native transform; the monitor with
+		// the largest native intersection supplies the Windows frame DPI.
+		const auto conversionScreen = [&] {
+			if (const auto selected = QGuiApplication::screenAt(target.center())) {
+				return selected;
+			}
+			const auto current = window()->windowHandle()->screen();
+			auto fallback = current;
+			if (current) {
+				for (const auto screen : current->virtualSiblings()) {
+					if (screen->geometry().contains(target.center())) {
+						return screen;
+					}
+					if (screen->geometry().intersects(target)) {
+						fallback = screen;
+					}
+				}
+			}
+			return fallback;
+		}();
+		const auto nativeTarget = [&] {
+			if (!conversionScreen || !target.isValid()) {
+				return QRect();
+			}
+			const auto origin = conversionScreen->geometry().topLeft();
+			const auto dpr = conversionScreen->devicePixelRatio();
+			return QRect(
+				origin + (target.topLeft() - origin) * dpr,
+				target.size() * dpr);
+		}();
+		auto nativeRect = RECT{
+			nativeTarget.left(), nativeTarget.top(),
+			nativeTarget.right() + 1, nativeTarget.bottom() + 1,
+		};
+		const auto frameMonitor = nativeTarget.isValid()
+			? MonitorFromRect(&nativeRect, MONITOR_DEFAULTTONULL)
+			: nullptr;
+		const auto targetDpi = [&] {
+			if (!frameMonitor || !GetDpiForMonitorSupported()) {
+				return 0;
+			}
+			auto x = UINT(0);
+			auto y = UINT(0);
+			return SUCCEEDED(GetDpiForMonitor(frameMonitor, 0, &x, &y))
+				? int(x)
+				: 0;
+		}();
 		const auto currentDpi = int(_dpi.current());
-		if (targetDpi > 0 && currentDpi > 0 && targetDpi != currentDpi) {
-			updateMargins(uint(targetDpi));
+		_pendingDpi = (targetDpi > 0 && currentDpi > 0 && targetDpi != currentDpi)
+			? uint(targetDpi)
+			: 0;
+		_pendingDpiPreparing = (_pendingDpi != 0);
+		_pendingWindow = target;
+		_pendingMonitor = frameMonitor;
+		if (_pendingDpi) {
+			updateMargins(_pendingDpi);
+		}
+		if (generation != _pendingGeneration) {
+			return;
+		}
+		_pendingDpiPreparing = false;
+	}
+	const auto geometry = target;
+	// Keep the generation checks between the operations performed by
+	// SetGeometryAndScreen(): changing screens may re-enter setGeometry().
+	if (const auto screen = QGuiApplication::screenAt(geometry.center())) {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+		window()->setScreen(screen);
+#else // Qt >= 6.0.0
+		window()->createWinId();
+		if (generation != _pendingGeneration) {
+			return;
+		}
+		window()->windowHandle()->setScreen(screen);
+#endif // Qt < 6.0.0
+		if (generation != _pendingGeneration) {
+			return;
 		}
 	}
-	SetGeometryAndScreen(
-		window(),
-		rect.marginsAdded({ 0, titleHeight(), 0, 0 }));
+	window()->setGeometry(geometry);
+	if (generation != _pendingGeneration) {
+		return;
+	}
+	if (_handle
+		&& window()->isHidden()
+		&& !_isFullScreen
+		&& !window()->isMinimized()
+		&& !window()->isMaximized()
+		&& !window()->isFullScreen()
+		&& !window()->testAttribute(Qt::WA_DontShowOnScreen)
+		&& !window()->testAttribute(Qt::WA_OutsideWSRange)) {
+		const auto handle = window()->windowHandle();
+		const auto widgetRect = window()->geometry();
+		if (handle && generation == _pendingGeneration) {
+			handle->setGeometry(widgetRect);
+		}
+		if (generation != _pendingGeneration) {
+			return;
+		}
+	}
+	checkPendingDpi(false);
 }
 
 void WindowHelper::showFullScreen() {
+	_pendingDpi = 0;
 	if (!_isFullScreen) {
 		_isFullScreen = true;
 		updateCornersRounding();
@@ -377,6 +495,7 @@ void WindowHelper::showFullScreen() {
 }
 
 void WindowHelper::showNormal() {
+	_pendingDpi = 0;
 	window()->showNormal();
 	if (_isFullScreen) {
 		_isFullScreen = false;
@@ -466,6 +585,7 @@ void WindowHelper::init() {
 	}
 
 	const auto handleStateChanged = [=](Qt::WindowState state) {
+		_pendingDpi = 0;
 		if (fixedSize() && (state & Qt::WindowMaximized)) {
 			crl::on_main(window().get(), [=] {
 				window()->setWindowState(
@@ -667,6 +787,9 @@ bool WindowHelper::filterNativeEvent(
 
 	case WM_WINDOWPOSCHANGING:
 	case WM_WINDOWPOSCHANGED: {
+		if (msg == WM_WINDOWPOSCHANGED) {
+			checkPendingDpi(true);
+		}
 		auto placement = WINDOWPLACEMENT{
 			.length = sizeof(WINDOWPLACEMENT),
 		};
@@ -717,6 +840,7 @@ bool WindowHelper::filterNativeEvent(
 	} return false;
 
 	case WM_SHOWWINDOW: {
+		checkPendingDpi(false);
 		if (_shadow) {
 			const auto style = GetWindowLongPtr(_handle, GWL_STYLE);
 			const auto changes = WindowShadow::Change::Resized
@@ -786,6 +910,7 @@ bool WindowHelper::filterNativeEvent(
 	} return true;
 
 	case WM_DPICHANGED: {
+		_pendingDpi = 0;
 		_dpi = LOWORD(wParam);
 		InvokeQueued(_title, [=] {
 			_title->refreshAdditionalPaddings(_handle);
@@ -882,7 +1007,10 @@ HitTestResult WindowHelper::systemButtonHitTest(int result) const {
 }
 
 int WindowHelper::titleHeight() const {
-	return _title->isHidden() ? 0 : st::windowTitleHeight;
+	if (_title->isHidden()) {
+		return 0;
+	}
+	return _title->height();
 }
 
 bool WindowHelper::nativeResize() const {
@@ -962,17 +1090,35 @@ void WindowHelper::enableCloakingForHidden() {
 void WindowHelper::updateMargins(uint dpi) {
 	// Full screen keeps margins of normal state, each change makes Qt
 	// resize frame and breaks geometry restored after full screen.
-	if (!_handle || _updatingMargins || _isFullScreen) {
+	if (!_handle) {
+		return;
+	}
+	if (_updatingMargins) {
+		_marginsUpdatePending = true;
+		return;
+	}
+	if (_isFullScreen) {
 		return;
 	}
 
 	_updatingMargins = true;
-	const auto guard = gsl::finally([&] { _updatingMargins = false; });
+	const auto guard = gsl::finally([&] {
+		_updatingMargins = false;
+		if (_marginsUpdatePending && !_marginsUpdateQueued) {
+			_marginsUpdateQueued = true;
+			InvokeQueued(window(), [=] {
+				_marginsUpdateQueued = false;
+				if (base::take(_marginsUpdatePending)) {
+					updateMargins();
+				}
+			});
+		}
+	});
 
 	RECT r{};
 	const auto style = GetWindowLongPtr(_handle, GWL_STYLE);
 	const auto styleEx = GetWindowLongPtr(_handle, GWL_EXSTYLE);
-	const auto useDpi = dpi ? dpi : _dpi.current();
+	const auto useDpi = dpi ? dpi : (_pendingDpi ? _pendingDpi : _dpi.current());
 	if (AdjustWindowRectExForDpiSupported() && useDpi) {
 		AdjustWindowRectExForDpi(&r, style, false, styleEx, useDpi);
 	} else {
@@ -1036,6 +1182,38 @@ void WindowHelper::updateMargins(uint dpi) {
 		_marginsDelta = QMargins();
 	}
 	SetCustomMargins(window()->windowHandle(), margins);
+}
+
+void WindowHelper::checkPendingDpi(bool nativePlacement) {
+	// Manage only the temporary DPI override. Clearing it does not establish
+	// that the requested native rectangle or body geometry was achieved.
+	if (!_pendingDpi || _pendingDpiPreparing) {
+		return;
+	}
+	const auto actualDpi = (_handle && GetDpiForWindowSupported())
+		? int(GetDpiForWindow(_handle))
+		: int(_dpi.current());
+	const auto actualMonitor = _handle
+		? MonitorFromWindow(_handle, MONITOR_DEFAULTTONEAREST)
+		: nullptr;
+	if (window()->geometry() != _pendingWindow) {
+		_pendingDpi = 0;
+		return;
+	}
+	if (actualDpi == int(_pendingDpi)) {
+		_pendingDpi = 0;
+		// Subscribers may start another geometry request. Do not clear their
+		// pending override after notifying them.
+		_dpi = uint(actualDpi);
+		return;
+	}
+	if (nativePlacement
+		&& actualMonitor
+		&& _pendingMonitor
+		&& actualMonitor != _pendingMonitor) {
+		_pendingDpi = 0;
+		return;
+	}
 }
 
 void WindowHelper::fixMaximizedWindow() {

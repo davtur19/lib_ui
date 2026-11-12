@@ -51,6 +51,7 @@ public:
 private:
 	void init();
 	void updateMargins(uint dpi = 0);
+	void checkPendingDpi(bool nativePlacement);
 	void updateCloaking();
 	void enableCloakingForHidden();
 	void updateWindowFrameColors();
@@ -83,9 +84,16 @@ private:
 	rpl::event_stream<not_null<SystemCommandRequest*>> _systemCommandRequests;
 	std::optional<WindowShadow> _shadow;
 	rpl::variable<uint> _dpi;
+	uint _pendingDpi = 0;
+	uint _pendingGeneration = 0;
+	QRect _pendingWindow;
+	HMONITOR _pendingMonitor = nullptr;
+	bool _pendingDpiPreparing = false;
 	QMargins _marginsDelta, _rcWorkDelta;
 	HWND _handle = nullptr;
 	bool _updatingMargins = false;
+	bool _marginsUpdatePending = false;
+	bool _marginsUpdateQueued = false;
 	bool _isFullScreen = false;
 	bool _isMaximizedAndTranslucent = false;
 

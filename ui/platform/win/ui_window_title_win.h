@@ -44,6 +44,10 @@ public:
 		HWND handle,
 		const WINDOWPLACEMENT &placement);
 	[[nodiscard]] int additionalPadding() const;
+	[[nodiscard]] int additionalPaddingFor(
+		HMONITOR monitor,
+		qreal dpr,
+		bool rounded) const;
 	[[nodiscard]] rpl::producer<int> additionalPaddingValue() const;
 
 protected:

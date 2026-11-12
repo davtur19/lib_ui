@@ -197,29 +197,13 @@ void TitleWidget::refreshAdditionalPaddings(
 		&& (normal.right == geometry.right)
 		&& (normal.top == geometry.top)
 		&& (normal.bottom == geometry.bottom);
-	const auto padding = [&] {
-		if (!rounded) {
-			return 0;
-		}
-		const auto monitor = MonitorFromWindow(
-			handle,
-			MONITOR_DEFAULTTONEAREST);
-		if (!monitor) {
-			LOG(("System Error: MonitorFromWindow failed."));
-			return -1;
-		}
-		auto factor = DEVICE_SCALE_FACTOR();
-		if (!SUCCEEDED(GetScaleFactorForMonitor(monitor, &factor))) {
-			LOG(("System Error: GetScaleFactorForMonitor failed."));
-			return -1;
-		} else if (factor < 100 || factor > 500) {
-			LOG(("System Error: Bad scale factor %1.").arg(int(factor)));
-			return -1;
-		}
-		const auto pixels = (factor + 50) / 100;
-		return int(base::SafeRound(
-			pixels / window()->windowHandle()->devicePixelRatio()));
-	}();
+	const auto monitor = MonitorFromWindow(
+		handle,
+		MONITOR_DEFAULTTONEAREST);
+	const auto padding = additionalPaddingFor(
+		monitor,
+		window()->windowHandle()->devicePixelRatio(),
+		rounded);
 	if (padding < 0) {
 		return;
 	}
@@ -230,6 +214,29 @@ int TitleWidget::additionalPadding() const {
 	return _paddingHelper ? _paddingHelper->padding.current() : 0;
 }
 
+int TitleWidget::additionalPaddingFor(
+		HMONITOR monitor,
+		qreal dpr,
+		bool rounded) const {
+	if (!_paddingHelper
+		|| !CheckTitlePaddingRequired()
+		|| !monitor
+		|| (dpr <= 0.)) {
+		return -1;
+	}
+	auto factor = DEVICE_SCALE_FACTOR();
+	if (!SUCCEEDED(GetScaleFactorForMonitor(monitor, &factor))) {
+		return -1;
+	} else if (factor < 100 || factor > 500) {
+		return -1;
+	} else if (!rounded) {
+		return 0;
+	}
+	const auto pixels = (factor + 50) / 100;
+	const auto padding = int(base::SafeRound(pixels / dpr));
+	return int(padding / dpr);
+}
+
 rpl::producer<int> TitleWidget::additionalPaddingValue() const {
 	return _paddingHelper ? _paddingHelper->padding.value() : rpl::single(0);
 }
@@ -237,7 +244,6 @@ rpl::producer<int> TitleWidget::additionalPaddingValue() const {
 void TitleWidget::setAdditionalPadding(int padding) {
 	Expects(_paddingHelper != nullptr);
 
-	padding /= window()->devicePixelRatio();
 	if (_paddingHelper->padding.current() == padding) {
 		return;
 	}
